@@ -57,7 +57,7 @@ export default {
       if (this.roomId && this.name) {
         axios
           .post(
-            "http://127.0.0.1:8080/api/room/join",
+            `http://${process.env.VUE_APP_BASE_API}/api/room/join`,
             {
               name: this.name,
               room_id: parseInt(this.roomId),
@@ -91,7 +91,7 @@ export default {
       this.handlerType = 0;
       axios
         .post(
-          "http://127.0.0.1:8080/api/room/create",
+          `http://${process.env.VUE_APP_BASE_API}/api/room/create`,
           {
             name: this.name,
           },
@@ -102,7 +102,6 @@ export default {
           }
         )
         .then((res) => {
-          console.log(res);
           this.$router.push(
             `/room?roomId=${res.data.room_id}&name=${this.name}`
           );

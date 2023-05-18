@@ -3,18 +3,17 @@
     <div class="main">
       <div>
         <h1>房间号 {{ roomId }}</h1>
+        <button @click="end_live">结束</button>
         <div style="width: 90vw; margin-left: 5vw; margin-right: 5vw">
           <el-row>
             <el-col :xs="24" :md="12" :lg="12" :xl="12">
-              <div style="width: 100%; height: 20px; background-color: red">
-                <h3>{{ masterName }}</h3>
+              <div style="width: 100%">
                 <video ref="localVideo" autoplay></video>
               </div>
             </el-col>
             <el-col :xs="24" :md="12" :lg="12" :xl="12">
-              <div style="width: 100%; height: 20px; background-color: black">
-                <h3>{{ guestName }}</h3>
-                <video ref="localVideo" autoplay></video>
+              <div style="width: 100%">
+                <img :src="remoteVideo" />
               </div>
             </el-col>
           </el-row>
@@ -25,7 +24,7 @@
 </template>
 
 <script>
-import axios from "axios";
+import utils from "@/utils/zip";
 
 export default {
   name: "RoomView",
@@ -42,108 +41,92 @@ export default {
       masterName: "",
       guestName: "",
       localStream: null,
-      remoteStream: null,
-      peerConnection: null,
+      remoteVideo: "",
       websocket: null,
+      end: false,
     };
   },
   methods: {
-    async startVideoChat() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
+    end_live() {
+      this.end = true;
+      this.websocket.send("end");
+      this.websocket.close();
+    },
+    initMediaStream() {
+      if (this.end) {
+        return;
+      }
+      navigator.mediaDevices
+        .getUserMedia({
+          video: { width: 480, height: 480, mimeType: "video/webm" },
+        })
+        .then((stream) => {
+          this.localStream = stream;
+          this.$refs.localVideo.srcObject = stream;
+          setTimeout(() => {
+            this.localVideo();
+          }, 3000);
+        })
+        .catch((error) => {
+          console.error("Error accessing media devices:", error);
         });
-        this.localStream = stream;
-        this.$refs.localVideo.srcObject = stream;
-
-        this.peerConnection = new RTCPeerConnection();
-        this.peerConnection.addStream(this.localStream);
-
-        // Create WebSocket connection
-        this.websocket = new WebSocket(
-          `ws://localhost:8080/api/ws/live?room_id=${this.roomId}&name=${this.name}`
+    },
+    localVideo() {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.width = this.$refs.localVideo.videoWidth;
+      canvas.height = this.$refs.localVideo.videoHeight;
+      const fps = 24;
+      let showPng = setInterval(() => {
+        if (this.end) {
+          clearInterval(showPng);
+          return;
+        }
+        // 在 Canvas 上绘制当前视频帧
+        context.drawImage(
+          this.$refs.localVideo,
+          0,
+          0,
+          canvas.width,
+          canvas.height
         );
 
-        // WebSocket event handlers
-        this.websocket.onopen = () => {
-          console.log("WebSocket connection opened");
+        // 将 Canvas 转换为图像数据（base64 格式）
+        const imageData = canvas.toDataURL("image/jpeg");
 
-          // Send offer to the backend
-          this.createOffer();
-        };
-
-        this.websocket.onmessage = async (event) => {
-          const msg = JSON.parse(event.data);
-          switch (msg.type) {
-            case "offer":
-              await this.peerConnection.setRemoteDescription(msg);
-              // Send answer to the backend
-              await this.createAnswer();
-              break;
-
-            case "answer":
-              await this.peerConnection.setRemoteDescription(msg);
-              break;
-
-            case "candidate":
-              await this.peerConnection.addIceCandidate(msg);
-              break;
-          }
-        };
-
-        this.websocket.onclose = () => {
-          console.log("WebSocket connection closed");
-        };
-      } catch (error) {
-        console.error("Error accessing media devices:", error);
-      }
+        // 将图像数据发送给后端
+        let zipBasePng = utils.zipStr(imageData);
+        this.websocket.send(zipBasePng);
+      }, 1000 / fps);
     },
 
-    async createOffer() {
-      const offer = await this.peerConnection.createOffer();
-      await this.peerConnection.setLocalDescription(offer);
+    initWebsocket() {
+      //const videoElement = document.getElementById("videoElement");
+      this.websocket = new WebSocket(
+        `ws://${process.env.VUE_APP_BASE_API}/api/ws/live?room_id=${this.roomId}&name=${this.name}`
+      );
+      // WebSocket event handlers
+      this.websocket.onopen = () => {
+        console.log("WebSocket connection opened");
+        this.initMediaStream();
+      };
 
-      // Send offer to the backend
-      this.websocket.send(JSON.stringify(offer));
-    },
+      this.websocket.onmessage = async (event) => {
+        let imgBase64 = utils.unzipStr(event.data);
+        this.remoteVideo = imgBase64;
+      };
 
-    async createAnswer() {
-      const answer = await this.peerConnection.createAnswer();
-      await this.peerConnection.setLocalDescription(answer);
-
-      // Send answer to the backend
-      this.websocket.send(JSON.stringify(answer));
+      this.websocket.onclose = () => {
+        console.log("WebSocket connection closed");
+      };
     },
   },
+  beforeDestroy() {
+    this.end = true;
+    this.websocket.close();
+  },
   mounted() {
-    axios
-      .post(
-        "http://127.0.0.1:8080/api/room/info",
-        {
-          room_id: parseInt(this.roomId),
-        },
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      )
-      .then((res) => {
-        this.masterName = res.data["master_name"];
-        this.guestName = res.data["guest_name"];
-        this.startVideoChat();
-      })
-      .catch((err) => {
-        let errText = "系统错误";
-        try {
-          errText = err.response.data.error;
-        } catch (e) {
-          console.log(e);
-        }
-        alert(errText);
-        this.$router.push("/");
-      });
+    this.initWebsocket();
   },
 };
 </script>
